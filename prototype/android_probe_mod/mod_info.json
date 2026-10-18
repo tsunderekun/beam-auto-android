@@ -1,0 +1,6 @@
+{
+  "name": "Beam Auto Android Probe",
+  "author": "Beam Auto",
+  "version": "0.1.0",
+  "description": "Universal vehicle-relative Android screen projection through GE ImGui."
+}

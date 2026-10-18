@@ -1,0 +1,30 @@
+# Local and generated files
+.opencode/
+AGENTS.md
+backups/
+backup_adaptive_gestures_v2/
+release.zip
+roadwave_music_player.zip
+
+# Local BeamNG installation and runtime state
+**/beamng.log
+**/settings/
+**/temp/
+**/mods/unpacked/
+
+# Native build output and intermediate objects
+prototype/android_probe_mod/native/build/
+**/*.o
+**/*.obj
+**/*.pdb
+
+# Local staging directories
+release/_stage/
+
+# Editor and OS files
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
