@@ -880,6 +880,14 @@ bundled scrcpy отдельно подтвердили внешний video/audi
   SHA-256 `20095025E9C8F6B2B524422E3C5174BE4F513907E20B99BFC6B3AB823FA5963C`.
   Вложенный исходный архив ImDisk: 799 789 bytes,
   SHA-256 `AB309F8C5C810EAE5AEC874F070751835234199BCD194D84CDF572F553CCFB3F`.
+- 2026-10-19 создан публичный GitHub-репозиторий
+  `https://github.com/tsunderekun/beam-auto-android`. Локальный проект
+  инициализирован с веткой `main`, первый коммит `2de8f86` опубликован через
+  настроенный GitHub-аккаунт Fork. В публичный состав вошли исходники проекта,
+  docs, release ZIP/README и bundled scrcpy; backups, RoadWave-архив,
+  `release.zip`, локальные установки и build-intermediate исключены через
+  `.gitignore`. GitHub принял runtime ZIP, но выдал предупреждение о размере
+  `55.89 MB`, превышающем рекомендованные `50 MB` для одного файла.
 
 Старый экспериментальный пункт WebView → физический material остаётся
 отдельной гипотезой, но не является ближайшим шагом для уже подтверждённого
