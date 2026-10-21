@@ -20,7 +20,7 @@ $bash = Join-Path $MsysRoot 'usr\bin\bash.exe'
 
 $msysSource = (& $bash -lc "cygpath -u '$source'").Trim()
 $msysOutput = (& $bash -lc "cygpath -u '$output'").Trim()
-$command = "export PATH=/ucrt64/bin:/usr/bin:`$PATH; g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -municode -DUNICODE -D_UNICODE `"$msysSource`" -o `"$msysOutput`" `$(`pkg-config --cflags --libs libavcodec libavutil libswscale libjpeg`)"
+$command = "export PATH=/ucrt64/bin:/usr/bin:`$PATH; g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -municode -DUNICODE -D_UNICODE `"$msysSource`" -o `"$msysOutput`" `$(`/ucrt64/bin/pkg-config.exe --cflags --libs libavcodec libavformat libavutil libswscale libjpeg`)"
 & $bash -lc $command
 if ($LASTEXITCODE -ne 0) { throw "g++ failed with exit code $LASTEXITCODE" }
 Write-Host "BUILT=$output"

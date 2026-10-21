@@ -76,6 +76,26 @@ local function readFrameConfig()
   return readJsonTable(FRAME_CONFIG_PATH, 3)
 end
 
+local function ensureFrameConfig()
+  if readFrameConfig() then return true end
+  if type(jsonWriteFile) ~= 'function' then
+    log('W', 'beamAutoAndroidProbe', 'Cannot create frame handshake: jsonWriteFile unavailable')
+    return false
+  end
+  local initial = {
+    status = 'stopped',
+    producer = 'scrcpy_mkv_jpeg_producer',
+    source = 'scrcpy-mkv-named-pipe',
+  }
+  local ok, result = pcall(jsonWriteFile, FRAME_CONFIG_PATH, initial, true)
+  if not ok or result == false then
+    log('W', 'beamAutoAndroidProbe', 'Failed to create frame handshake: ' .. tostring(result))
+    return false
+  end
+  log('I', 'beamAutoAndroidProbe', 'Created frame handshake: ' .. FRAME_CONFIG_PATH)
+  return true
+end
+
 local function clamp(value, lo, hi)
   if type(value) ~= 'number' or value ~= value then return (lo + hi) * 0.5 end
   return math.min(hi, math.max(lo, value))
@@ -241,8 +261,8 @@ local function sendHttpCommand(path)
 end
 
 local function androidPoint(u, v)
-  return math.floor(clamp(u, 0, 1) * math.max(1, devRealW)),
-    math.floor(clamp(v, 0, 1) * math.max(1, devRealH))
+  return math.floor(clamp(u, 0, 1) * math.max(0, devRealW - 1)),
+    math.floor(clamp(v, 0, 1) * math.max(0, devRealH - 1))
 end
 
 local function publishGesture()
@@ -324,6 +344,9 @@ local function updateTouch(im, screenQuad)
     return
   end
 
+  -- screenQuad is the exact quad passed to AddImageQuad, so its normalized
+  -- coordinates already address the full JPEG. Do not remap through the
+  -- bezel inset a second time.
   local u, v = inverseQuad(mousePos, screenQuad)
   local inside = u and v and u >= 0 and u <= 1 and v >= 0 and v <= 1
 
@@ -658,8 +681,9 @@ local function onPreRenderBody(dt)
     drawLineLoop(im, dl, {screenQuad[1], screenQuad[2], screenQuad[4], screenQuad[3]}, screenBorder, 1)
     im.ImDrawList_AddCircleFilled(dl, bilinear(0.50, 0.026), 4, color(im, 0.01, 0.01, 0.01, 1))
     if touchActive and down then
-      im.ImDrawList_AddCircleFilled(dl, bilinear(touchU, touchV), 8, color(im, 1, 1, 1, 0.30))
-      im.ImDrawList_AddCircle(dl, bilinear(touchU, touchV), 15, color(im, 1, 1, 1, 0.18), 16, 1.5)
+      local touchPoint = bilinear(u0 + touchU * (u1 - u0), v0 + touchV * (v1 - v0))
+      im.ImDrawList_AddCircleFilled(dl, touchPoint, 8, color(im, 1, 1, 1, 0.30))
+      im.ImDrawList_AddCircle(dl, touchPoint, 15, color(im, 1, 1, 1, 0.18), 16, 1.5)
     end
     if not scrTexId then
       im.ImDrawList_AddText1(dl, bilinear(0.18, 0.46), dark, 'ANDROID 3D PROBE', nil)
@@ -746,6 +770,7 @@ end
 
 function M.onExtensionLoaded()
   loadPrefs()
+  ensureFrameConfig()
   log('I', 'beamAutoAndroidProbe', 'RoadWave-style ImGui carrier probe loaded')
 end
 

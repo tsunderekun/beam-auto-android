@@ -1,6 +1,6 @@
 # Память проекта
 
-Обновлено: 2026-10-19.
+Обновлено: 2026-10-22.
 
 ## Цель
 Мод BeamNG.drive: показывать экран Android-телефона в 3D ImGui-проекции
@@ -888,6 +888,106 @@ bundled scrcpy отдельно подтвердили внешний video/audi
   `release.zip`, локальные установки и build-intermediate исключены через
   `.gitignore`. GitHub принял runtime ZIP, но выдал предупреждение о размере
   `55.89 MB`, превышающем рекомендованные `50 MB` для одного файла.
+- 2026-10-22 диагностика Nothing A059P / Android 16: ADB сообщает устройство
+  `00170155H000255` как `device`, scrcpy v5.0.1 показывает живой экран. Точная
+  команда producer-а `adb exec-out screenrecord --output-format=h264
+  --time-limit 3 --bit-rate 20000000 -` возвращает текст
+  `Encoder failed (err=-38)` и exit code 0; тот же результат получен при
+  закрытом окне scrcpy. Следовательно, USB/ADB-коннект исправен, а Android
+  screenrecord H.264 путь на данном устройстве не работает в этой конфигурации.
+  Это наблюдение не доказывает причину кода `-38` внутри Android.
+- 2026-10-22 ошибочно запущен `scrcpy_window_imdisk_frames.ps1` как video proof.
+  Скрипт делает `Graphics.CopyFromScreen` по координатам окна, то есть снимает
+  видимый desktop/composited image, а не внутренний framebuffer scrcpy. Поэтому
+  при перекрытии окна в поток попал участок основного монитора с рабочим столом
+  и содержимым окон. Высокий metadata sequence доказывал лишь, что GDI-capture
+  loop публикует кадры; он не доказывал, что кадры содержат только телефон или
+  корректно отображаются в BeamNG. Объявлять этот вариант рабочим screen-video
+  transport было ошибкой. Скрипт остановлен; принадлежащие этому тесту окно
+  scrcpy, RAM-диск `Y:` и junction удалены. Независимый ранее существовавший
+  RAM-диск `Z:` проверен и оставлен нетронутым. Потоковые JPEG существовали
+  только на RAM-диске `Y:`, который отключён; постоянной записи кадров не было.
+  Не запускать GDI window-capture producer снова как транспорт телефона.
+- 2026-10-22 новый кандидат видеопути проверен отдельно: bundled scrcpy v5.0.1
+  с `--no-video-playback --record <Windows named pipe> --record-format=mkv`
+  передал Matroska/EBML bytes непосредственно в pipe. Это доказывает pipe
+  transport, но не получение кадра и не его содержимое.
+- 2026-10-22 native C++ producer переведён с `adb screenrecord` на scrcpy
+  named-pipe → FFmpeg Matroska demux/video decode → JPEG publisher. Native GUI
+  передаёт путь к bundled scrcpy; существующие audio bridge и HTTP touch bridge
+  не переписывались. Обновлён build script под libavformat. Оба EXE успешно
+  собрались локально в `prototype/android_probe_mod/native/build/`; runtime-копия
+  не менялась.
+- 2026-10-22 elevated smoke-test нового producer на Nothing A059P прошёл:
+  producer получил поток из bundled scrcpy named pipe, декодировал и опубликовал
+  4 кадра в ImDisk `Y:`; exit code 0, metadata sequence 4, размер 540×1196,
+  JPEG 131266 bytes. Изображение было визуально осмотрено и показывает экран
+  телефона (Telegram UI), не desktop и не перекрытые окна. Это подтверждает
+  producer path до RAM-backed JPEG, но не BeamNG отображение.
+- Для elevated smoke-test по разрешению пользователя отключён прежний ImDisk
+  `Z:` после проверки корня (только `System Volume Information`, пользовательских
+  файлов не обнаружено). Временный ImDisk `Y:` с тестовым JPEG отключён после
+  осмотра; данные удалились вместе с RAM-диском. Оба mount point освобождены.
+- На момент elevated smoke-test runtime-копия на Desktop не изменялась. Во время
+  сборки были предупреждения о неиспользуемой `QueryDisplaySize` и `longjmp`
+  clobber; DLL dependencies и длительный/restart smoke-test требуют проверки.
+- 2026-10-22 пользователь нажал Start в elevated GUI, собранном из репозитория,
+  и прислал игровой скриншот с видимой проекцией экрана Nothing в салоне Dacia.
+  Это пользовательское визуальное подтверждение кадра в BeamNG 0.40.1.0 (лог:
+  `D:\BeamNGUSER\current\beamng.log:1`, не ранее указанной 0.39.4).
+  Активный handshake сообщает `status=running`, producer
+  `scrcpy_mkv_jpeg_producer`, source `scrcpy-mkv-named-pipe`; live metadata
+  достиг sequence 648, размер 540×1196, JPEG 66635 bytes с `FF-D8-FF`.
+  Lua log сообщает создание texture handler для session VFS пути
+  `/temp/beam_auto_android_frame_probe_ram_3C0F3B2B-B551-4E8A-921F-F22C3CFF8EC5/android_frame.jpg`.
+  Audio bridge слушает/подключён на 8767; HTTP control listener на 8766.
+  Пользователь сообщил «есть контакт», изображение видно. Автоматическая
+  передача настоящего tap/swipe ещё не проверялась; длительный и restart test
+  остаются открыты. Текущую GUI session не останавливать без просьбы пользователя.
+- 2026-10-22 пользователь сообщил, что тач смещён. Активный handshake при
+  scrcpy scale 0.5 содержал `frameWidth=540`, `frameHeight=1196`, но ошибочно
+  также `displayWidth=540`, `displayHeight=1196`; ADB `shell wm size` вернул для
+  подключённого Nothing 1080×2392. Это объясняет неверный диапазон ADB touch
+  coordinates (половинные X/Y). В producer добавлен запрос `wm size` при старте;
+  скорректирован диапазон до `W-1/H-1` и debug marker Lua. Оба EXE собраны в
+  отдельный `native/build_touchfix/`. Действующую GUI/BeamNG сессию не
+  перезапускали и Lua изменения в игре не загружали — runtime-коррекция ещё не
+  подтверждена. Старый handshake остаётся 540×1196 до следующего запуска.
+- По просьбе пользователя выполнен restart: старая GUI-сессия остановлена,
+  producer завершён; новая elevated GUI открыта из `native/build_touchfix/` и
+  запущена. Handshake session `8308C669-09E9-4EE5-9125-204BC87278DB` показывает
+  `running`, `displayWidth=1080`, `displayHeight=2392`, JPEG 540×1196; metadata
+  sequence достигла 402. Новые порты 8766/8767 подняты GUI PID 30820.
+  Это подтверждает исправленные входные размеры в producer, но фактическое
+   совпадение касания ещё должен проверить пользователь. BeamNG Lua-мод не был
+   перезагружен; касательные/индикаторные изменения Lua пока могут не работать
+   до reload. Оставить текущую сессию активной.
+ - Пользователь хочет автоматически создавать BeamNG handshake config, поскольку
+  обновление игры может удалить файл из user temp. В `probe.lua` добавлена
+  `ensureFrameConfig()` при `onExtensionLoaded`: создать JSON по штатному VFS пути
+  `/temp/beam_auto_android_frame_probe.json` со статусом `stopped`, только если
+   файл не читается; существующий handshake не трогать. Изменённый Lua ещё не
+   загружен в runtime, создание после удаления файла не проверено.
+- Пользователь удалил config и перезагрузил extension. BeamNG log подтвердил
+  `Created frame handshake: /temp/beam_auto_android_frame_probe.json`; config
+  создан повторно, GUI запустил новую session `AF96AE21-2350-494C-9E22-8E243EB2F767`.
+  Elevated inspection подтвердил config/metadata running, display 1080×2392,
+  кадр 540×1196, sequence 175 и обновляющийся JPEG. Таким образом, Lua
+   auto-create и последующий producer handshake runtime-проверены. Фактическая
+   точность тача остаётся открытой.
+- Пользователь сообщил, что FPS вывода низкий; попросил разобраться без патча.
+  Elevated metadata inspection активной session `B4171940-4596-403E-AE2C-4FA99C00BEBA`:
+  sequence 14891→14963 за 5.0 s, около 14.4 published FPS при outputFps=60.
+  `Get-Process` показал producer CPU time ~188.56 s со старта; это похоже на
+  CPU-bound процесс (~одно ядро), но не указывает конкретный этап. По исходнику
+  `adb_h264_jpeg_producer.cpp` каждый decoded frame проходит RGB24 `sws_scale`,
+  libjpeg encode, затем публикацию JPEG + metadata; throttle проверяет период
+  после decode и при отставании пропускает JPEG publish, но продолжает
+  декодировать packets. В Lua `probe.lua` texture `setID`/`FS.triggerFilesChanged`
+  вызываются примерно раз в 33 ms. Возможны CPU cost JPEG/scale, избыточная
+  работа FFmpeg decoder или game-side texture refresh. Это гипотезы. Патчей
+  производительности не сделано; сначала нужны per-stage timings/input-vs-output
+  FPS и отдельные проверки scale/quality/FPS.
 
 Старый экспериментальный пункт WebView → физический material остаётся
 отдельной гипотезой, но не является ближайшим шагом для уже подтверждённого

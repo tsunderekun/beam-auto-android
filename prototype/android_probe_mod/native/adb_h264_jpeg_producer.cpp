@@ -3,6 +3,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
@@ -18,12 +19,15 @@ extern "C" {
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
+
+namespace fs = std::filesystem;
 
 std::atomic<bool> g_stop{false};
 HANDLE g_child_process = nullptr;
@@ -42,6 +46,7 @@ BOOL WINAPI ConsoleHandler(DWORD type) {
 
 struct Options {
   std::wstring adb_path;
+  std::wstring scrcpy_path;
   std::wstring serial;
   std::wstring frame_path;
   std::wstring metadata_path;
@@ -223,50 +228,6 @@ bool QueryDisplaySize(const Options& options, int* width, int* height) {
   return exit_code == 0 && ParseDisplaySize(output, width, height);
 }
 
-bool StopRemoteScreenrecord(const Options& options) {
-  SECURITY_ATTRIBUTES attributes{};
-  attributes.nLength = sizeof(attributes);
-  attributes.bInheritHandle = TRUE;
-  HANDLE null_input = CreateFileW(L"NUL", GENERIC_READ,
-                                  FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes,
-                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  HANDLE null_output = CreateFileW(L"NUL", GENERIC_WRITE,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes,
-                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (null_input == INVALID_HANDLE_VALUE || null_output == INVALID_HANDLE_VALUE) {
-    if (null_input != INVALID_HANDLE_VALUE) CloseHandle(null_input);
-    if (null_output != INVALID_HANDLE_VALUE) CloseHandle(null_output);
-    return false;
-  }
-
-  std::wstring command = QuoteWindowsArg(options.adb_path);
-  if (!options.serial.empty()) command += L" -s " + QuoteWindowsArg(options.serial);
-  command += L" shell pkill -9 screenrecord";
-  std::vector<wchar_t> command_buffer(command.begin(), command.end());
-  command_buffer.push_back(L'\0');
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  startup.dwFlags = STARTF_USESTDHANDLES;
-  startup.hStdInput = null_input;
-  startup.hStdOutput = null_output;
-  startup.hStdError = null_output;
-  PROCESS_INFORMATION process{};
-  const bool created = CreateProcessW(nullptr, command_buffer.data(), nullptr, nullptr,
-                                      TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
-                                      &startup, &process) != FALSE;
-  CloseHandle(null_input);
-  CloseHandle(null_output);
-  if (!created) return false;
-  WaitForSingleObject(process.hProcess, 3000);
-  DWORD exit_code = 1;
-  GetExitCodeProcess(process.hProcess, &exit_code);
-  CloseHandle(process.hThread);
-  CloseHandle(process.hProcess);
-  // pkill returns 1 when there was nothing to kill; that is a normal startup
-  // condition, so only process-launch failure is considered a failure here.
-  return true;
-}
-
 bool ParseInt(const wchar_t* text, int* value, bool allow_zero = false) {
   wchar_t* end = nullptr;
   const long parsed = std::wcstol(text, &end, 10);
@@ -280,9 +241,10 @@ bool ParseInt(const wchar_t* text, int* value, bool allow_zero = false) {
 
 void PrintUsage() {
   std::wcerr
-      << L"Usage: adb_h264_jpeg_producer.exe --adb PATH --frame-path PATH "
+      << L"Usage: adb_h264_jpeg_producer.exe --adb PATH --scrcpy PATH --frame-path PATH "
          L"--metadata-path PATH [options]\n"
-      << L"  --serial SERIAL             optional ADB device serial\n"
+       << L"  --serial SERIAL             optional ADB device serial\n"
+       << L"  --scrcpy PATH               bundled scrcpy.exe (v5.0.1)\n"
       << L"  --config-path PATH          optional BeamNG producer handshake\n"
       << L"  --vfs-frame-path PATH       path exposed to BeamNG Lua\n"
       << L"  --vfs-metadata-path PATH    metadata path exposed to BeamNG Lua\n"
@@ -304,6 +266,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options* options) {
     };
     if (key == L"--adb") {
       if (!next(&options->adb_path)) return false;
+    } else if (key == L"--scrcpy") {
+      if (!next(&options->scrcpy_path)) return false;
     } else if (key == L"--serial") {
       if (!next(&options->serial)) return false;
     } else if (key == L"--frame-path") {
@@ -340,7 +304,8 @@ bool ParseOptions(int argc, wchar_t** argv, Options* options) {
       return false;
     }
   }
-  return !options->adb_path.empty() && !options->frame_path.empty() &&
+  return !options->adb_path.empty() && !options->scrcpy_path.empty() &&
+         !options->frame_path.empty() &&
          !options->metadata_path.empty();
 }
 
@@ -428,8 +393,8 @@ std::string BuildMetadata(const Options& options, uint64_t sequence,
        << JsonEscape(Utf8FromWide(options.vfs_frame_path.empty()
                                       ? options.frame_path
                                       : options.vfs_frame_path))
-       << "\",\"producer\":\"adb_h264_jpeg_producer\","
-       << "\"source\":\"adb-exec-out-screenrecord-h264\"}";
+        << "\",\"producer\":\"scrcpy_mkv_jpeg_producer\","
+        << "\"source\":\"scrcpy-mkv-named-pipe\"}";
   return json.str();
 }
 
@@ -451,91 +416,94 @@ std::string BuildConfig(const Options& options, const char* status,
         << "\"outputFps\":" << options.fps << ","
         << "\"scale\":" << ScaleJsonNumber(options.scale_percent) << ","
        << "\"sessionId\":\"" << JsonEscape(Utf8FromWide(options.session_id)) << "\","
-       << "\"producer\":\"adb_h264_jpeg_producer\","
-       << "\"source\":\"adb-exec-out-screenrecord-h264\"}";
+        << "\"producer\":\"scrcpy_mkv_jpeg_producer\","
+        << "\"source\":\"scrcpy-mkv-named-pipe\"}";
   return json.str();
 }
 
-bool StartAdb(Options& options, HANDLE* read_pipe, PROCESS_INFORMATION* process_info) {
-  // Terminating the local adb.exe does not reliably terminate the remote
-  // screenrecord shell on Android. Clean stale recorders before opening a new
-  // hardware encoder, otherwise the next session can fail with "unable to
-  // start codec" after a few Start/Stop cycles.
-  if (!StopRemoteScreenrecord(options)) {
-    std::wcerr << L"Warning: could not run remote screenrecord cleanup\n";
+int ReadPipe(void* opaque, uint8_t* buffer, int buffer_size) {
+  const HANDLE pipe = static_cast<HANDLE>(opaque);
+  DWORD bytes_read = 0;
+  const DWORD requested = static_cast<DWORD>(std::min(buffer_size, 1 << 20));
+  if (!ReadFile(pipe, buffer, requested, &bytes_read, nullptr)) {
+    const DWORD error = GetLastError();
+    if (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA ||
+        error == ERROR_PIPE_NOT_CONNECTED) return AVERROR_EOF;
+    return AVERROR(error);
   }
-  Sleep(250);
+  return bytes_read ? static_cast<int>(bytes_read) : AVERROR_EOF;
+}
+
+bool StartScrcpy(Options& options, HANDLE* pipe, PROCESS_INFORMATION* process_info) {
+  const std::wstring pipe_name = L"\\\\.\\pipe\\beam_auto_scrcpy_video_" +
+      std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+  HANDLE server_pipe = CreateNamedPipeW(
+      pipe_name.c_str(), PIPE_ACCESS_INBOUND,
+      PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+      1, 1 << 20, 1 << 20, 0, nullptr);
+  if (server_pipe == INVALID_HANDLE_VALUE) {
+    std::wcerr << L"CreateNamedPipe failed, error=" << GetLastError() << L"\n";
+    return false;
+  }
 
   SECURITY_ATTRIBUTES attributes{};
   attributes.nLength = sizeof(attributes);
   attributes.bInheritHandle = TRUE;
-
-  HANDLE child_stdout = nullptr;
-  HANDLE parent_read = nullptr;
-  if (!CreatePipe(&parent_read, &child_stdout, &attributes, 1 << 20)) {
-    std::wcerr << L"CreatePipe failed, error=" << GetLastError() << L"\n";
-    return false;
-  }
-  SetHandleInformation(parent_read, HANDLE_FLAG_INHERIT, 0);
-
   HANDLE null_stdin = CreateFileW(L"NUL", GENERIC_READ,
-                                  FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes,
-                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  HANDLE null_stderr = CreateFileW(L"NUL", GENERIC_WRITE,
-                                   FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes,
-                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (null_stdin == INVALID_HANDLE_VALUE || null_stderr == INVALID_HANDLE_VALUE) {
+      FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE null_output = CreateFileW(L"NUL", GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, &attributes, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (null_stdin == INVALID_HANDLE_VALUE || null_output == INVALID_HANDLE_VALUE) {
     std::wcerr << L"Opening NUL failed, error=" << GetLastError() << L"\n";
-    CloseHandle(parent_read);
-    CloseHandle(child_stdout);
+    CloseHandle(server_pipe);
     if (null_stdin != INVALID_HANDLE_VALUE) CloseHandle(null_stdin);
-    if (null_stderr != INVALID_HANDLE_VALUE) CloseHandle(null_stderr);
+    if (null_output != INVALID_HANDLE_VALUE) CloseHandle(null_output);
     return false;
   }
 
-  std::wstring command = QuoteWindowsArg(options.adb_path);
+  std::wstring command = QuoteWindowsArg(options.scrcpy_path);
   if (!options.serial.empty()) command += L" -s " + QuoteWindowsArg(options.serial);
-  command += L" exec-out screenrecord --output-format=h264 --time-limit 0 --bit-rate ";
-  const int64_t scaled_bit_rate = std::max<int64_t>(1000000,
-      static_cast<int64_t>(options.bit_rate) * options.scale_percent * options.scale_percent / 10000);
-  command += std::to_wstring(scaled_bit_rate);
-  int display_width = 0;
-  int display_height = 0;
-  if (QueryDisplaySize(options, &display_width, &display_height)) {
-    options.display_width = display_width;
-    options.display_height = display_height;
-  }
-  // Do not pass a fixed --size to screenrecord. Android can change the
-  // logical display orientation while the stream is running; a fixed encoder
-  // size keeps the H.264 frames portrait and leaves the in-game carrier
-  // portrait too. Scaling the decoded frame below preserves the requested
-  // output factor while allowing the frame width/height to follow rotation.
-  command += L" -";
-
+  command += L" --no-audio --no-video-playback --no-control --record ";
+  command += QuoteWindowsArg(pipe_name) + L" --record-format=mkv";
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   startup.dwFlags = STARTF_USESTDHANDLES;
   startup.hStdInput = null_stdin;
-  startup.hStdOutput = child_stdout;
-  startup.hStdError = null_stderr;
+  startup.hStdOutput = null_output;
+  startup.hStdError = null_output;
   ZeroMemory(process_info, sizeof(*process_info));
-
   std::vector<wchar_t> command_buffer(command.begin(), command.end());
   command_buffer.push_back(L'\0');
-  const bool created = CreateProcessW(nullptr, command_buffer.data(), nullptr, nullptr,
-                                      TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
-                                      &startup, process_info) != FALSE;
-  CloseHandle(child_stdout);
+  const fs::path scrcpy_directory = fs::path(options.scrcpy_path).parent_path();
+  const bool created = CreateProcessW(options.scrcpy_path.c_str(), command_buffer.data(),
+      nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, scrcpy_directory.c_str(),
+      &startup, process_info) != FALSE;
+  const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();
   CloseHandle(null_stdin);
-  CloseHandle(null_stderr);
+  CloseHandle(null_output);
   if (!created) {
-    std::wcerr << L"CreateProcess adb failed, error=" << GetLastError() << L"\n";
-    CloseHandle(parent_read);
+    std::wcerr << L"CreateProcess scrcpy failed, error=" << create_error << L"\n";
+    CloseHandle(server_pipe);
     return false;
   }
 
   g_child_process = process_info->hProcess;
-  *read_pipe = parent_read;
+  if (!ConnectNamedPipe(server_pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) {
+    const DWORD error = GetLastError();
+    std::wcerr << L"ConnectNamedPipe failed, error=" << error << L"\n";
+    TerminateProcess(process_info->hProcess, 1);
+    WaitForSingleObject(process_info->hProcess, 3000);
+    CloseHandle(process_info->hThread);
+    CloseHandle(process_info->hProcess);
+    *process_info = {};
+    g_child_process = nullptr;
+    CloseHandle(server_pipe);
+    return false;
+  }
+
+  *pipe = server_pipe;
   return true;
 }
 
@@ -611,14 +579,14 @@ bool EncodeJpeg(const AVFrame* frame, const Options& options, SwsContext** scale
 }
 
 bool PublishFrame(const Options& options, const AVFrame* frame, SwsContext** scaler,
-                  uint64_t sequence, int64_t arrival_us) {
+                  uint64_t sequence, int64_t pts_us, int64_t arrival_us) {
   std::vector<uint8_t> jpeg;
   int output_width = 0;
   int output_height = 0;
   if (!EncodeJpeg(frame, options, scaler, &jpeg, &output_width, &output_height)) return false;
   if (!PublishBytes(options.frame_path, jpeg.data(), jpeg.size())) return false;
   const std::string metadata = BuildMetadata(options, sequence, output_width,
-                                             output_height, frame->pts, arrival_us,
+                                              output_height, pts_us, arrival_us,
                                              "running");
   if (!PublishText(options.metadata_path, metadata)) return false;
   if (!options.config_path.empty() && sequence == 1) {
@@ -650,44 +618,97 @@ int wmain(int argc, wchar_t** argv) {
     return 2;
   }
 
-  const AVCodec* decoder = avcodec_find_decoder(AV_CODEC_ID_H264);
-  if (!decoder) {
-    std::cerr << "H.264 decoder not found\n";
-    return 3;
+  // The published JPEG may be scaled down for performance, but Android input
+  // coordinates must use the device's logical display size, not JPEG size.
+  // Lua uses displayWidth/displayHeight as the ADB input coordinate range.
+  if (!QueryDisplaySize(options, &options.display_width, &options.display_height)) {
+    std::wcerr << L"Warning: could not query Android display size; touch coordinates "
+                  L"will fall back to decoded frame dimensions\n";
   }
-  AVCodecContext* codec = avcodec_alloc_context3(decoder);
-  AVCodecParserContext* parser = av_parser_init(AV_CODEC_ID_H264);
+
+  AVCodecContext* codec = nullptr;
   AVPacket* packet = av_packet_alloc();
   AVFrame* frame = av_frame_alloc();
   SwsContext* scaler = nullptr;
-  if (!codec || !parser || !packet || !frame) {
+  if (!packet || !frame) {
     std::cerr << "FFmpeg allocation failed\n";
-    avcodec_free_context(&codec);
-    if (parser) av_parser_close(parser);
     av_packet_free(&packet);
     av_frame_free(&frame);
     return 3;
   }
   int result = 0;
-  int open_result = avcodec_open2(codec, decoder, nullptr);
-  if (open_result < 0) {
-    std::cerr << "avcodec_open2 failed: " << AvError(open_result) << "\n";
-    result = 3;
-  }
-
-  HANDLE read_pipe = nullptr;
+  HANDLE read_pipe = INVALID_HANDLE_VALUE;
   PROCESS_INFORMATION process_info{};
-  if (result == 0 && !StartAdb(options, &read_pipe, &process_info)) result = 4;
+  AVIOContext* io = nullptr;
+  AVFormatContext* format = nullptr;
+  if (!StartScrcpy(options, &read_pipe, &process_info)) result = 4;
+  if (result == 0) {
+    constexpr int io_buffer_size = 64 * 1024;
+    auto* io_buffer = static_cast<uint8_t*>(av_malloc(io_buffer_size));
+    if (!io_buffer) {
+      std::cerr << "FFmpeg IO buffer allocation failed\n";
+      result = 3;
+    } else {
+      io = avio_alloc_context(io_buffer, io_buffer_size, 0, read_pipe,
+                              ReadPipe, nullptr, nullptr);
+      if (!io) {
+        av_free(io_buffer);
+        std::cerr << "avio_alloc_context failed\n";
+        result = 3;
+      }
+    }
+  }
+  if (result == 0) {
+    format = avformat_alloc_context();
+    if (!format) {
+      std::cerr << "avformat_alloc_context failed\n";
+      result = 3;
+    } else {
+      format->pb = io;
+      format->flags |= AVFMT_FLAG_CUSTOM_IO;
+      const int open_result = avformat_open_input(&format, nullptr, nullptr, nullptr);
+      if (open_result < 0) {
+        std::cerr << "scrcpy recording demux failed: " << AvError(open_result) << "\n";
+        result = 5;
+      }
+    }
+  }
+  int video_stream = -1;
+  if (result == 0) {
+    const int info_result = avformat_find_stream_info(format, nullptr);
+    if (info_result < 0) {
+      std::cerr << "scrcpy stream info failed: " << AvError(info_result) << "\n";
+      result = 5;
+    } else {
+      video_stream = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1,
+                                         nullptr, 0);
+      if (video_stream < 0) {
+        std::cerr << "scrcpy Matroska stream contains no video track\n";
+        result = 5;
+      }
+    }
+  }
+  if (result == 0) {
+    AVCodecParameters* parameters = format->streams[video_stream]->codecpar;
+    const AVCodec* stream_decoder = avcodec_find_decoder(parameters->codec_id);
+    if (!stream_decoder) {
+      std::cerr << "scrcpy video codec decoder not found\n";
+      result = 3;
+    } else {
+      codec = avcodec_alloc_context3(stream_decoder);
+      if (!codec || avcodec_parameters_to_context(codec, parameters) < 0 ||
+          avcodec_open2(codec, stream_decoder, nullptr) < 0) {
+        std::cerr << "Could not initialize scrcpy stream decoder\n";
+        result = 3;
+      }
+    }
+  }
 
   uint64_t sequence = 0;
   auto next_publish = std::chrono::steady_clock::time_point::min();
   const auto publish_period = std::chrono::microseconds(1000000 / options.fps);
-  std::vector<uint8_t> input(1 << 20);
-  auto decode_packet = [&](const uint8_t* data, int size) -> bool {
-    av_packet_unref(packet);
-    packet->data = const_cast<uint8_t*>(data);
-    packet->size = size;
-    int send_result = avcodec_send_packet(codec, packet);
+  auto publish_decoded_frames = [&](const AVPacket* decoded_packet) -> bool {
+    const int send_result = avcodec_send_packet(codec, decoded_packet);
     if (send_result < 0) {
       std::cerr << "avcodec_send_packet failed: " << AvError(send_result) << "\n";
       return false;
@@ -708,7 +729,11 @@ int wmain(int argc, wchar_t** argv) {
         continue;
       }
       ++sequence;
-      if (!PublishFrame(options, frame, &scaler, sequence, arrival_us)) return false;
+      const int64_t pts_us = frame->best_effort_timestamp == AV_NOPTS_VALUE
+          ? AV_NOPTS_VALUE
+          : av_rescale_q(frame->best_effort_timestamp,
+              format->streams[video_stream]->time_base, AVRational{1, 1000000});
+      if (!PublishFrame(options, frame, &scaler, sequence, pts_us, arrival_us)) return false;
       next_publish = now_point + publish_period;
       if (options.max_frames > 0 && sequence >= static_cast<uint64_t>(options.max_frames)) {
         g_stop.store(true);
@@ -719,57 +744,33 @@ int wmain(int argc, wchar_t** argv) {
   };
 
   while (result == 0 && !g_stop.load()) {
-    DWORD bytes_read = 0;
-    if (!ReadFile(read_pipe, input.data(), static_cast<DWORD>(input.size()),
-                  &bytes_read, nullptr)) {
-      const DWORD error = GetLastError();
-      if (error != ERROR_BROKEN_PIPE) {
-        std::cerr << "ReadFile failed, error=" << error << "\n";
-        result = 5;
+    const int read_result = av_read_frame(format, packet);
+    if (read_result < 0) {
+      if (read_result != AVERROR_EOF && !g_stop.load()) {
+        std::cerr << "scrcpy video read failed: " << AvError(read_result) << "\n";
+        result = 6;
       }
       break;
     }
-    if (bytes_read == 0) break;
-
-    if (sequence == 0 && bytes_read >= 6 &&
-        std::memcmp(input.data(), "ERROR:", 6) == 0) {
-      std::cerr << "screenrecord failed: "
-                << std::string(reinterpret_cast<char*>(input.data()), bytes_read)
-                << "\n";
-      result = 9;
-      break;
+    if (packet->stream_index == video_stream && !publish_decoded_frames(packet)) {
+      result = 7;
     }
-
-    const uint8_t* cursor = input.data();
-    int remaining = static_cast<int>(bytes_read);
-    while (remaining > 0 && !g_stop.load()) {
-      uint8_t* packet_data = nullptr;
-      int packet_size = 0;
-      const int consumed = av_parser_parse2(
-          parser, codec, &packet_data, &packet_size, cursor, remaining,
-          AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
-      if (consumed < 0) {
-        std::cerr << "av_parser_parse2 failed: " << AvError(consumed) << "\n";
-        result = 6;
-        break;
-      }
-      if (consumed == 0 && packet_size == 0) {
-        std::cerr << "H.264 parser made no progress\n";
-        result = 6;
-        break;
-      }
-      cursor += consumed;
-      remaining -= consumed;
-      if (packet_size > 0 && !decode_packet(packet_data, packet_size)) {
-        result = 7;
-        break;
-      }
-    }
+    av_packet_unref(packet);
   }
 
-  if (read_pipe) CloseHandle(read_pipe);
+  if (result != 0 && process_info.hProcess && !g_stop.load()) {
+    TerminateProcess(process_info.hProcess, 1);
+  }
+  if (format) avformat_close_input(&format);
+  if (io) {
+    av_freep(&io->buffer);
+    avio_context_free(&io);
+  }
+  if (read_pipe != INVALID_HANDLE_VALUE) CloseHandle(read_pipe);
   if (process_info.hProcess) {
-    if (g_stop.load()) TerminateProcess(process_info.hProcess, 0);
+    if (g_stop.load() && WaitForSingleObject(process_info.hProcess, 0) == WAIT_TIMEOUT) {
+      TerminateProcess(process_info.hProcess, 0);
+    }
     WaitForSingleObject(process_info.hProcess, 3000);
     DWORD child_exit = 0;
     GetExitCodeProcess(process_info.hProcess, &child_exit);
@@ -777,27 +778,25 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(process_info.hProcess);
     g_child_process = nullptr;
     if (result == 0 && child_exit != 0 && !g_stop.load()) {
-      std::cerr << "adb exited with code " << child_exit << "\n";
+      std::cerr << "scrcpy exited with code " << child_exit << "\n";
       result = 8;
     }
   }
 
   if (sequence == 0 && result == 0) {
-    std::cerr << "screenrecord ended without producing a video frame\n";
+    std::cerr << "scrcpy ended without producing a video frame\n";
     result = 9;
   }
-  StopRemoteScreenrecord(options);
-
   if (!options.config_path.empty()) {
     const std::string stopped = BuildConfig(options, "stopped", sequence,
-                                             codec->width, codec->height);
+                                             codec ? codec->width : 0,
+                                             codec ? codec->height : 0);
     PublishText(options.config_path, stopped);
   }
   if (scaler) sws_freeContext(scaler);
+  avcodec_free_context(&codec);
   av_frame_free(&frame);
   av_packet_free(&packet);
-  av_parser_close(parser);
-  avcodec_free_context(&codec);
   SetConsoleCtrlHandler(ConsoleHandler, FALSE);
   std::cout << "PRODUCER_STOPPED frames=" << sequence << " result=" << result << "\n";
   return result;

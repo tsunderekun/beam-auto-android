@@ -870,18 +870,16 @@ void Worker(std::wstring adb, std::wstring producer, std::wstring config,
       PostStatus(L"WARNING: control bridge 8766 unavailable");
     }
     const std::wstring scrcpy = FindSibling(L"scrcpy-win64-v5.0.1\\scrcpy.exe");
-    if (!scrcpy.empty()) {
-      if (!g_audio_bridge.Start(scrcpy, serial)) {
-        PostStatus(L"WARNING: audio bridge 8767 unavailable");
-      }
-    } else {
-      PostStatus(L"WARNING: scrcpy.exe or serial unavailable; audio disabled");
+    if (scrcpy.empty()) throw std::runtime_error("bundled scrcpy.exe not found");
+    if (!g_audio_bridge.Start(scrcpy, serial)) {
+      PostStatus(L"WARNING: audio bridge 8767 unavailable");
     }
 
     const fs::path producer_dir = fs::path(producer).parent_path();
     const std::wstring frame = (fs::path(mount) / L"android_frame.jpg").wstring();
     const std::wstring metadata = (fs::path(mount) / L"android_frame_state.json").wstring();
     std::wstring command = QuoteArg(producer) + L" --adb " + QuoteArg(adb) +
+        L" --scrcpy " + QuoteArg(scrcpy) +
         L" --frame-path " + QuoteArg(frame) +
         L" --metadata-path " + QuoteArg(metadata) +
         L" --config-path " + QuoteArg(config) +

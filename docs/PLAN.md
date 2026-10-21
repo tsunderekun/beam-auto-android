@@ -4,6 +4,73 @@
 proof-of-concept, полный медиатракт пока не начинался.
 Не согласованные явно детали ниже остаются предложениями.
 
+### Текущее восстановление video producer (2026-10-22)
+
+- На Nothing A059P / Android 16 USB/ADB исправен; `scrcpy v5.0.1` получает
+  изображение. Прямой `adb exec-out screenrecord --output-format=h264` возвращает
+  `Encoder failed (err=-38)` также без запущенного scrcpy.
+- Window-capture скрипт `prototype/android_probe_mod/tools/scrcpy_window_imdisk_frames.ps1`
+  был запущен и остановлен. Это НЕ рабочее решение: `Graphics.CopyFromScreen`
+  снимает composited desktop и при перекрытии scrcpy захватывает чужие окна.
+  Статус `running`/рост sequence подтвердили только цикл GDI и запись в ImDisk,
+  но не чистый видеокадр телефона. Не использовать этот скрипт для screen-video.
+  Созданные тестом scrcpy, ImDisk `Y:` и junction удалены; ранее существовавший
+  `Z:` оставлен.
+- Следующий этап: использовать `scrcpy --no-video-playback --record <named pipe>
+  --record-format=mkv`, затем FFmpeg demux/decode и публикацию JPEG в RAM-backed
+  staging. Отдельный PowerShell smoke-test подтвердил Matroska/EBML заголовок
+  непосредственно в Windows named pipe, без файла и desktop capture.
+- Реализация подключена к native producer и GUI; audio/touch bridge код оставлен.
+  Сборка обоих EXE прошла. Повторный elevated smoke-test прошёл: bundled scrcpy →
+  named pipe → FFmpeg Matroska/decode → четыре JPEG-кадра на ImDisk Y:.
+  Последний metadata sequence — 4, размер 540×1196, producer exit code 0.
+  JPEG осмотрен: изображён экран телефона, без desktop/occlusion. Тестовый Y:
+  отсоединён, кадры удалены вместе с RAM-диском. По разрешению пользователя
+  отсоединён и предыдущий RAM-диск Z:; пользовательских файлов в его корне не
+  обнаружено. Runtime-копия не менялась.
+- 2026-10-22 пользователь нажал Start в elevated GUI, собранном в репозитории.
+  GUI подключился к handshake активного BeamNG и создал session-specific
+  ImDisk/junction; live sequence достиг 648, JPEG валиден, размер 540×1196.
+  Lua log сообщил создание texture handler для уникального VFS пути. Пользователь
+  прислал игровой скриншот с видимой проекцией экрана Nothing в салоне — video
+  end-to-end gate пройден для BeamNG 0.40.1.0. Audio bridge подключён на 8767,
+  touch bridge listener открыт на 8766. Реальный touch event пользователем пока
+  не подтверждён. Runtime-копия на Desktop не менялась.
+- Продолжать текущую сессию до просьбы пользователя остановить; после проверки
+  тача/звука отдельно выполнить длительный/restart test и DLL deployment check.
+- 2026-10-22 проверка жалобы на смещение тача: активный handshake ошибочно
+  содержит `displayWidth=540`, `displayHeight=1196` — размеры JPEG при scale 0.5,
+  а не Android display 1080×2392 (`adb shell wm size`). Это объясняет неверный
+  диапазон ADB touch coordinates. В исходнике producer добавлен запрос `wm size`
+  перед стартом и Lua использует размеры дисплея из config; поправлен также
+  индикатор тача для соответствия координатам image quad. В отдельную папку
+  `native/build_touchfix/` собраны оба EXE успешно. Активную GUI/video session
+  не перезапускали, Lua-мод в работающую игру не загружали; исправление пока не
+  runtime-проверено. Текущая сессия продолжает работать на старой сборке.
+- 2026-10-22 по просьбе пользователя выполнен restart медиасессии. Старая сессия
+  переведена в stopped; producer завершён, затем запущена elevated GUI из
+  `native/build_touchfix/`. Новая сессия `8308C669-09E9-4EE5-9125-204BC87278DB`
+  сообщает `status=running`, display 1080×2392, JPEG 540×1196, metadata sequence
+  402, файл 113453 bytes. Слушатели 8766/8767 принадлежат новому GUI PID 30820.
+  Это подтверждает новое metadata/input resolution, но не подтверждает загрузку
+  изменённого Lua-файла в уже работающий BeamNG и не проверяет фактическую точку
+  тапа. Сессию оставить активной для пользовательской проверки.
+- 2026-10-22 по просьбе пользователя добавлена самогенерация handshake: Lua
+  extension при загрузке создаёт `/temp/beam_auto_android_frame_probe.json` со
+  статусом `stopped` и producer/source идентификаторами, только если файла нет;
+  существующий handshake не перезаписывается. Это должно восстановить файл после
+  очистки/обновления user temp при следующем запуске/загрузке мода и позволить GUI
+  обнаружить config без ручного создания. Изменение исходника ещё не загружено в
+  активный BeamNG и runtime-проверка создания отсутствующего файла не выполнена.
+- 2026-10-22 пользователь перезагрузил extension после удаления config. BeamNG log
+  зафиксировал `Created frame handshake: /temp/beam_auto_android_frame_probe.json`
+  и загрузку extension; отсутствовавший файл создан в user temp. GUI обнаружил
+  handshake и запустил новую session `AF96AE21-2350-494C-9E22-8E243EB2F767`;
+  config/metadata `running`, display 1080×2392, frame 540×1196, sequence как
+  минимум 175 и JPEG обновляется. Auto-create и последующий producer handshake
+  проверены в работающем BeamNG. Медиатракт теперь повторно работает после
+   удаления config; фактический touch alignment ещё проверяется отдельно.
+
 ## 1. Уточнить исходные условия
 - Целевая установленная версия — BeamNG.drive 0.39.4.0 (сообщена пользователем).
   Исследование `beamng.log:1–2,180–199` подтвердило build 20972 и DirectX 12.
