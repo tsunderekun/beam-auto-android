@@ -3,15 +3,15 @@
 Релиз состоит из двух ZIP-архивов:
 
 - `beam_auto_android_probe_mod.zip` — BeamNG-мод;
-- `beam_auto_android_media_runtime.zip` — native GUI, video producer, DLL,
-  bundled ADB и scrcpy.
+- `beam_auto_android_media_runtime.zip` — native GUI, scrcpy video producer,
+  DLL, bundled ADB/scrcpy и ImDisk installer.
 
 Python для запуска не требуется.
 
 ## 1. Что требуется заранее
 
 - Windows x64;
-- BeamNG.drive 0.39.4.0 или совместимая версия;
+- BeamNG.drive 0.40.1.0 или совместимая версия;
 - подключённый Android-телефон по USB;
 - разрешённая USB-отладка и подтверждённый RSA-запрос на телефоне;
 - установленный ImDisk/ImDisk Toolkit с доступным `imdisk.exe`.
@@ -100,7 +100,8 @@ scrcpy-win64-v5.0.1\
 3. В GUI проверьте:
    - `ADB path` — обычно заполняется автоматически;
    - `Producer EXE` — должен указывать на `adb_h264_jpeg_producer.exe`;
-   - `BeamNG config` — путь к `temp/beam_auto_android_frame_probe.json`;
+   - `BeamNG config` — путь к `temp/beam_auto_android_frame_probe.json`; Lua-мод
+     создаёт этот handshake при загрузке, если файла нет;
    - `Serial` — необязательно, но рекомендуется указать serial телефона;
    - `Scale` — `0.5` по умолчанию;
    - `FPS`, JPEG quality и RAM MB.
@@ -108,9 +109,12 @@ scrcpy-win64-v5.0.1\
 5. Дождитесь статуса `Running session ...`.
 6. Если экран не появился сразу, в BeamNG выполните `Ctrl+L` один раз.
 
-Кадры идут через ADB H.264 → native FFmpeg decode → JPEG → ImDisk RAM →
-BeamNG VFS → `ImTextureHandler` → vehicle-relative `AddImageQuad`. Кадры не
-пишутся в обычный постоянный каталог.
+Кадры идут через scrcpy Matroska в Windows named pipe → native FFmpeg demux/decode
+→ JPEG → ImDisk RAM → BeamNG VFS → `ImTextureHandler` → vehicle-relative
+`AddImageQuad`. Видео и отдельные кадры не пишутся в обычный постоянный каталог.
+На Nothing A059P / Android 16 видеопроекция проверена в BeamNG 0.40.1.0;
+совпадение фактического тапа после исправления диапазона координат ещё требует
+проверки.
 
 ## 6. Rotate
 
@@ -141,8 +145,9 @@ adb shell wm user-rotation lock 0
 - Для нового запуска снова нажмите `Start`.
 - Не закрывайте GUI принудительно во время обычной остановки.
 
-Producer автоматически очищает зависшие удалённые процессы `screenrecord` до и
-после сессии. Это освобождает аппаратный Android-кодек после Stop/Start.
+Video producer запускает scrcpy Matroska stream через named pipe; аудиомост
+использует отдельный экземпляр scrcpy. Для нового сеанса нажимайте `Stop` и
+дождитесь очистки перед повторным `Start`.
 
 Если старый GUI был уже запущен до обновления runtime, его нужно полностью
 закрыть и запустить новый EXE: работающий процесс не подхватывает заменённый

@@ -3,15 +3,15 @@
 The release contains two ZIP archives:
 
 - `beam_auto_android_probe_mod.zip` — the BeamNG mod;
-- `beam_auto_android_media_runtime.zip` — the native GUI, video producer,
-  runtime DLLs, bundled ADB and scrcpy.
+- `beam_auto_android_media_runtime.zip` — native GUI, scrcpy video producer,
+  runtime DLLs, bundled ADB/scrcpy and ImDisk installer.
 
 Python is not required at runtime.
 
 ## 1. Requirements
 
 - Windows x64;
-- BeamNG.drive 0.39.4.0 or a compatible version;
+- BeamNG.drive 0.40.1.0 or a compatible version;
 - an Android phone connected over USB;
 - USB debugging enabled and the RSA authorization accepted on the phone;
 - ImDisk/ImDisk Toolkit installed, with `imdisk.exe` available in `PATH`.
@@ -75,6 +75,8 @@ The phone must be listed as `device`, not `unauthorized`.
 1. Start BeamNG.drive and load a vehicle.
 2. Run `beam_auto_android_media_gui.exe` as Administrator.
 3. Check the ADB path, producer path, BeamNG config path and optional serial.
+   The Lua mod creates the config handshake at `temp/beam_auto_android_frame_probe.json`
+   when it is missing.
 4. Leave `Scale` at `0.5` initially, or choose `0.25`, `0.75` or `1`.
 5. Press `Start`.
 6. If the screen does not appear immediately, press `Ctrl+L` once in BeamNG.
@@ -82,11 +84,14 @@ The phone must be listed as `device`, not `unauthorized`.
 The video path is:
 
 ```text
-ADB H.264 → native FFmpeg decode → JPEG → ImDisk RAM → BeamNG VFS
-→ ImTextureHandler → vehicle-relative AddImageQuad
+scrcpy Matroska over a Windows named pipe → native FFmpeg demux/decode
+→ JPEG → ImDisk RAM → BeamNG VFS → ImTextureHandler
+→ vehicle-relative AddImageQuad
 ```
 
-Frames are not written to a normal persistent frame directory.
+Neither video nor individual frames are written to a normal persistent directory.
+Video projection was checked on BeamNG 0.40.1.0 with Nothing A059P / Android 16;
+actual touch alignment after the coordinate-range fix still needs verification.
 
 ## 6. Rotate the phone screen
 
@@ -110,9 +115,9 @@ To return Android to automatic rotation manually:
 - Press `Start` again for a new session.
 - Do not force-close the GUI during a normal stop.
 
-The producer cleans stale remote `screenrecord` processes before and after each
-session. This prevents the Android hardware codec from remaining occupied after
-a Stop/Start cycle.
+The video producer uses scrcpy Matroska over a named pipe; audio runs through a
+separate scrcpy instance. Press `Stop` and wait for cleanup before starting a new
+session.
 
 If the GUI was already running before an update, close it completely and launch
 the new EXE. A running process does not load a replacement binary.

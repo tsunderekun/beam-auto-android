@@ -10,7 +10,7 @@ rotation handling and an experimental spatial audio path.
 
 ```text
 Android
-  -> ADB exec-out screenrecord
+  -> scrcpy Matroska over Windows named pipe
   -> H.264
   -> native C++ FFmpeg decoder
   -> JPEG
@@ -38,8 +38,9 @@ are distributed separately.
 - [English instructions](release/README_BEAM_AUTO_ANDROID_EN.md)
 
 The runtime package includes the native GUI, C++ producer, required runtime
-DLLs, bundled ADB/scrcpy and the ImDisk installer archive. ImDisk must be
-installed manually with administrator privileges.
+DLLs (including `avformat` for Matroska demux), bundled ADB/scrcpy and the
+ImDisk installer archive. ImDisk must be installed manually with administrator
+privileges.
 
 ## Quick start
 
@@ -62,8 +63,10 @@ touch, Hide/Show, Stop/Start and troubleshooting instructions.
 ## Status and scope
 
 This is an experimental proof-of-concept. The current target is Windows x64
-and BeamNG.drive 0.39.4.0 or a compatible version. Compatibility with every
-vehicle and Android device has not been established.
+and BeamNG.drive 0.40.1.0 or a compatible version. Video projection and automatic
+handshake recreation were checked on BeamNG 0.40.1.0 with Nothing A059P / Android
+16. Real touch alignment after the coordinate-range fix is not yet confirmed;
+compatibility with every vehicle and Android device has not been established.
 
 The project is not tied to the stock Vivace multimedia screen and does not add
 physical JBeam nodes, beams or flexbodies to the vehicle.
